@@ -1,9 +1,11 @@
 package main // import "github.com/getsops/sops/v3/cmd/sops"
 
 import (
+	"bytes"
 	"context"
 	encodingjson "encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -27,6 +29,7 @@ import (
 	"github.com/getsops/sops/v3/cmd/sops/common"
 	"github.com/getsops/sops/v3/cmd/sops/subcommand/exec"
 	filestatuscmd "github.com/getsops/sops/v3/cmd/sops/subcommand/filestatus"
+	"github.com/getsops/sops/v3/cmd/sops/subcommand/git"
 	"github.com/getsops/sops/v3/cmd/sops/subcommand/groups"
 	keyservicecmd "github.com/getsops/sops/v3/cmd/sops/subcommand/keyservice"
 	publishcmd "github.com/getsops/sops/v3/cmd/sops/subcommand/publish"
@@ -1500,6 +1503,242 @@ func main() {
 				}
 				log.Info("File written successfully")
 				return nil
+			},
+		},
+		{
+			Name:  "git",
+			Usage: "interact with git",
+			Subcommands: []cli.Command{
+				{
+					Name:      "smudge",
+					Usage:     "decrypt a git object given from stdin and output the result to stdout",
+					ArgsUsage: `[git object path]`,
+					Flags: append([]cli.Flag{
+						cli.StringFlag{
+							Name:  "input-type",
+							Usage: "currently ini, json, yaml, dotenv and binary are supported. If not set, sops will use the file's extension to determine the type",
+						},
+						cli.StringFlag{
+							Name:  "output-type",
+							Usage: "currently ini, json, yaml, dotenv and binary are supported. If not set, sops will use the input file's extension to determine the output format",
+						},
+						cli.BoolFlag{
+							Name:  "ignore-mac",
+							Usage: "ignore Message Authentication Code during decryption",
+						},
+						cli.StringFlag{
+							Name:   "decryption-order",
+							Usage:  "comma separated list of decryption key types",
+							EnvVar: "SOPS_DECRYPTION_ORDER",
+						},
+					}, keyserviceFlags...),
+					Action: func(c *cli.Context) error {
+						if c.Bool("verbose") {
+							logging.SetLevel(logrus.DebugLevel)
+						}
+						if c.NArg() < 1 {
+							return common.NewExitError("Error: no object path specified", codes.NoFileSpecified)
+						}
+						warnMoreThanOnePositionalArgument(c)
+						if c.String("input-type") != "" && c.String("output-type") == "" {
+							// default output type to be same as input type
+							c.Set("output-type", c.String("input-type"))
+						}
+						objectPath := c.Args()[0]
+						inputStore, err := inputStore(c, objectPath)
+						if err != nil {
+							return toExitError(err)
+						}
+						outputStore, err := outputStore(c, objectPath)
+						if err != nil {
+							return toExitError(err)
+						}
+						svcs := keyservices(c)
+
+						order, err := decryptionOrder(c.String("decryption-order"))
+						if err != nil {
+							return toExitError(err)
+						}
+
+						output, err := decrypt(decryptOpts{
+							OutputStore:     outputStore,
+							InputStore:      inputStore,
+							InputPath:       "/dev/stdin",
+							Cipher:          aes.NewCipher(),
+							KeyServices:     svcs,
+							DecryptionOrder: order,
+							IgnoreMAC:       c.Bool("ignore-mac"),
+						})
+						if err != nil {
+							return toExitError(err)
+						}
+
+						stdout := os.Stdout
+						_, err = stdout.Write(output)
+
+						return toExitError(err)
+					},
+				},
+				{
+					Name:      "clean",
+					Usage:     "encrypt a git object given from stdin and output the result to stdout",
+					ArgsUsage: `[git object path]`,
+					Flags: append([]cli.Flag{
+						cli.StringFlag{
+							Name:   "kms, k",
+							Usage:  "comma separated list of KMS ARNs",
+							EnvVar: "SOPS_KMS_ARN",
+						},
+						cli.StringFlag{
+							Name:  "aws-profile",
+							Usage: "The AWS profile to use for requests to AWS",
+						},
+						cli.StringFlag{
+							Name:   "gcp-kms",
+							Usage:  "comma separated list of GCP KMS resource IDs",
+							EnvVar: "SOPS_GCP_KMS_IDS",
+						},
+						cli.StringFlag{
+							Name:   "azure-kv",
+							Usage:  "comma separated list of Azure Key Vault URLs",
+							EnvVar: "SOPS_AZURE_KEYVAULT_URLS",
+						},
+						cli.StringFlag{
+							Name:   "hc-vault-transit",
+							Usage:  "comma separated list of vault's key URI (e.g. 'https://vault.example.org:8200/v1/transit/keys/dev')",
+							EnvVar: "SOPS_VAULT_URIS",
+						},
+						cli.StringFlag{
+							Name:   "pgp, p",
+							Usage:  "comma separated list of PGP fingerprints",
+							EnvVar: "SOPS_PGP_FP",
+						},
+						cli.StringFlag{
+							Name:   "age, a",
+							Usage:  "comma separated list of age recipients",
+							EnvVar: "SOPS_AGE_RECIPIENTS",
+						},
+						cli.StringFlag{
+							Name:  "input-type",
+							Usage: "currently json, yaml, dotenv and binary are supported. If not set, sops will use the file's extension to determine the type",
+						},
+						cli.StringFlag{
+							Name:  "output-type",
+							Usage: "currently json, yaml, dotenv and binary are supported. If not set, sops will use the input file's extension to determine the output format",
+						},
+						cli.StringFlag{
+							Name:  "unencrypted-suffix",
+							Usage: "override the unencrypted key suffix.",
+						},
+						cli.StringFlag{
+							Name:  "encrypted-suffix",
+							Usage: "override the encrypted key suffix. When empty, all keys will be encrypted, unless otherwise marked with unencrypted-suffix.",
+						},
+						cli.StringFlag{
+							Name:  "unencrypted-regex",
+							Usage: "set the unencrypted key regex. When specified, only keys matching the regex will be left unencrypted.",
+						},
+						cli.StringFlag{
+							Name:  "encrypted-regex",
+							Usage: "set the encrypted key regex. When specified, only keys matching the regex will be encrypted.",
+						},
+						cli.StringFlag{
+							Name:  "encryption-context",
+							Usage: "comma separated list of KMS encryption context key:value pairs",
+						},
+						cli.IntFlag{
+							Name:  "shamir-secret-sharing-threshold",
+							Usage: "the number of master keys required to retrieve the data key with shamir",
+						},
+					}, keyserviceFlags...),
+					Action: func(c *cli.Context) error {
+						if c.Bool("verbose") {
+							logging.SetLevel(logrus.DebugLevel)
+						}
+						if c.NArg() < 1 {
+							return common.NewExitError("Error: no object path specified", codes.NoFileSpecified)
+						}
+						warnMoreThanOnePositionalArgument(c)
+						if c.String("input-type") != "" && c.String("output-type") == "" {
+							// default output type to be same as input type; TODO: is this correct?
+							c.Set("output-type", c.String("input-type"))
+						}
+						objectPath := c.Args()[0]
+						inputStore, err := inputStore(c, objectPath)
+						if err != nil {
+							return toExitError(err)
+						}
+						outputStore, err := outputStore(c, objectPath)
+						if err != nil {
+							return toExitError(err)
+						}
+						svcs := keyservices(c)
+
+						encConfig, err := getEncryptConfig(c, objectPath)
+						if err != nil {
+							return toExitError(err)
+						}
+
+						var stdinCopy bytes.Buffer
+						tee := io.TeeReader(os.Stdin, &stdinCopy)
+
+						barename := filepath.Base(objectPath)
+						ext := filepath.Ext(barename)
+						prefix := strings.TrimSuffix(barename, ext)
+						pattern := prefix + "-*" + ext
+						tmp, err := os.CreateTemp("", pattern)
+						if err != nil {
+							panic(err)
+						}
+						defer func() {
+							tmp.Close()
+							os.Remove(tmp.Name())
+						}()
+						if _, err := io.Copy(tmp, tee); err != nil {
+							panic(err)
+						}
+						if err := tmp.Close(); err != nil {
+							panic(err)
+						}
+						encryptedStdin, err :=
+							encrypt(encryptOpts{
+								OutputStore:   outputStore,
+								InputStore:    inputStore,
+								InputPath:     tmp.Name(),
+								Cipher:        aes.NewCipher(),
+								KeyServices:   svcs,
+								encryptConfig: encConfig,
+							})
+						if err != nil {
+							return toExitError(err)
+						}
+
+						cleanOpts := git.CleanOpts{
+							ObjectPath:     objectPath,
+							Stdin:          stdinCopy.Bytes(),
+							EncryptedStdin: encryptedStdin,
+							InputFormat:    c.String("input-type"),
+							OutputFormat:   c.String("output-type"),
+						}
+
+						err = git.Clean(objectPath, cleanOpts)
+						return toExitError(err)
+					},
+				},
+				{
+					Name:  "diff",
+					Usage: "display a diffable version of a git object from stdin",
+					Action: func(c *cli.Context) error {
+						if c.Bool("verbose") {
+							logging.SetLevel(logrus.DebugLevel)
+						}
+
+						stdin := os.Stdin
+						stdout := os.Stdout
+						_, err := io.Copy(stdout, stdin)
+						return toExitError(err)
+					},
+				},
 			},
 		},
 	}
