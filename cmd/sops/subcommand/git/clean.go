@@ -3,15 +3,9 @@ package git
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 
-	"github.com/getsops/sops/v3/cmd/sops/formats"
-	"github.com/getsops/sops/v3/decrypt"
-	"github.com/go-git/go-git/plumbing"
-	"github.com/go-git/go-git/utils/ioutil"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	gogit "github.com/go-git/go-git/v5"
 )
 
 type CleanOpts struct {
@@ -22,186 +16,83 @@ type CleanOpts struct {
 	EncryptedStdin []byte
 }
 
-func getRepository() (*git.Repository, error) {
-	pwd, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get current directory: %w", err)
-	}
-	return git.PlainOpen(pwd)
-}
-
-func getWorktree() (*git.Worktree, error) {
-	r, err := getRepository()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load repository: %w", err)
-	}
-	return r.Worktree()
-}
-
-func getStagedBlob(path string) (*object.Blob, error) {
-	repo, err := getRepository()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load repository: %w", err)
-	}
-	index, err := repo.Storer.Index()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read index: %w", err)
-	}
-	var blob *object.Blob
-	for _, entry := range index.Entries {
-		if entry.Name == path {
-			blob, err = repo.BlobObject(entry.Hash)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get blob object: %w", err)
-			}
-			return blob, nil
-		}
-	}
-	return nil, fmt.Errorf("failed to find staged object: %w", err)
-}
-
-// returns the object at the head commit
-// if the file does not exist (is not committed), it returns nil
-func getHeadBlob(path string) (*object.Blob, error) {
-	repo, err := getRepository()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get repository: %w", err)
-	}
-	head, err := repo.Head()
-	if err != nil {
-		// TODO: consider new repository with no commits: maybe should return nil, nil?
-		return nil, fmt.Errorf("failed to get head: %w", err)
-	}
-	commit, err := repo.CommitObject(head.Hash())
-	if err != nil {
-		if err == plumbing.ErrObjectNotFound {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get commit: %w", err)
-	}
-
-	file, err := commit.File(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get file: %w", err)
-	}
-	return &file.Blob, err
-}
-
-func getFileStatus(path string) (*git.FileStatus, error) {
-	worktree, err := getWorktree()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get git worktree: %w", err)
-	}
-	status, err := worktree.Status()
-	if err != nil {
-		return nil, err
-	}
-	return status.File(path), nil
-}
-func headHasContent(path string) (bool, error) {
-	blob, err := getHeadBlob(path)
-	if err != nil {
-		return false, err
-	}
-	return blob != nil, nil
-}
-
-func stagedHasContent(path string) (bool, error) {
-	fileStatus, err := getFileStatus(path)
-	if err != nil {
-		return false, err
-	}
-	switch fileStatus.Staging {
-	case git.Added:
-		fallthrough
-	case git.Copied:
-		fallthrough
-	case git.Modified:
-		return true, nil
-	case git.Untracked:
-		fallthrough
-	case git.Unmodified:
-		return false, nil
-	case git.Renamed:
-		panic("not implemented - renamed")
-	case git.Deleted:
-		panic("not implemented - deleted")
-	default:
-		panic(fmt.Sprintf("not implemented - %s", string(fileStatus.Staging)))
-	}
-}
-
-// TODO: document this
-func cleanAgainstHead(path string, opts CleanOpts) (bool, []byte, error) {
-	headHasContent, err := headHasContent(path)
+func contentIsIdentical(path string, comparisonGitArea GitArea, opts CleanOpts) (bool, []byte, error) {
+	objectStatus, err := getObjectStatus(path)
 	if err != nil {
 		return false, nil, err
 	}
-	if !headHasContent {
+	switch objectStatus.Worktree {
+	case gogit.Added:
+		if objectStatus.Staging != gogit.Added || comparisonGitArea == Head {
+			return false, nil, nil
+		}
+		// we're in an unmerged, both added situation
+		panic("not implemented") // TODO: go by merging rules?
+	case gogit.Modified:
+		// let further logic decide
+	case gogit.UpdatedButUnmerged:
+		panic("not implemented") // TODO: figure out what to do
+	default: // Untracked, Unmodified, Deleted, Renamed, Copied
+		return false, nil, fmt.Errorf("we should not compare objects with status [%c]: %s", objectStatus.Worktree, path)
+	}
+
+	cleanContent, err := getCleanContent(path, comparisonGitArea)
+	if err != nil {
+		return false, nil, err
+	}
+	if cleanContent == nil {
 		return false, nil, nil
 	}
-	head, err := getHeadBlob(path)
+	smudgedContent, err := getSmudgedContent(cleanContent, opts.ObjectPath, opts.InputFormat)
 	if err != nil {
 		return false, nil, err
 	}
-	return cleanAgainstBlob(head, path, opts)
-}
-
-// TODO: document this
-func cleanAgainstStaging(path string, opts CleanOpts) (bool, []byte, error) {
-	stagedHasContent, err := stagedHasContent(path)
-	if err != nil {
-		return false, nil, err
-	}
-	if !stagedHasContent {
+	if !bytes.Equal(smudgedContent, opts.Stdin) {
 		return false, nil, nil
 	}
-	staging, err := getStagedBlob(path)
-	if err != nil {
-		return false, nil, err
-	}
-	return cleanAgainstBlob(staging, path, opts)
-}
-
-// TODO: document this
-func cleanAgainstBlob(blob *object.Blob, path string, opts CleanOpts) (bool, []byte, error) {
-	blobReader, err := blob.Reader()
-	defer ioutil.CheckClose(blobReader, &err)
-	cleanBlobContent, err := io.ReadAll(blobReader)
-	if err != nil {
-		return false, nil, err
-	}
-	smudgedBlobContent, err := decrypt.DataWithFormat(cleanBlobContent, formats.FormatForPathOrString(path, opts.InputFormat))
-	if err != nil {
-		return false, nil, err
-	}
-	if bytes.Equal(smudgedBlobContent, opts.Stdin) {
-		return true, cleanBlobContent, nil
+	identical := cleanContentIsEssentiallyIdentical(cleanContent, opts.EncryptedStdin, opts)
+	if identical {
+		return true, cleanContent, nil
 	}
 	return false, nil, nil
 }
 
+func cleanContentIsEssentiallyIdentical(c1 []byte, c2 []byte, opts CleanOpts) bool {
+	if bytes.Equal(c1, c2) {
+		return true
+	}
+	panic("not implemented") // TODO: figure out what to do
+	// deserialize, drop the mac and lastModified, and compare
+}
+
 func Clean(path string, opts CleanOpts) error {
-	changed, newCleanContent, err := cleanAgainstStaging(path, opts)
+	stagedIsIdentical, cleanContent, err := contentIsIdentical(path, Staging, opts)
 	if err != nil {
-		return fmt.Errorf("failed to compare with staging: %w", err)
+		return err
 	}
-	if !changed {
-		changed, newCleanContent, err = cleanAgainstHead(path, opts)
-		if err != nil {
-			return fmt.Errorf("failed to compare with head: %w", err)
-		}
-	}
-	if changed {
-		_, err := os.Stdout.Write(newCleanContent)
+	if stagedIsIdentical {
+		_, err := os.Stdout.Write(cleanContent)
 		if err != nil {
 			return fmt.Errorf("failed to write to stdout: %w", err)
 		}
-	} else {
-		_, err := os.Stdout.Write(opts.EncryptedStdin)
+		return nil
+	}
+
+	headIsIdentical, cleanContent, err := contentIsIdentical(path, Head, opts)
+	if err != nil {
+		return err
+	}
+	if headIsIdentical {
+		_, err := os.Stdout.Write(cleanContent)
 		if err != nil {
 			return fmt.Errorf("failed to write to stdout: %w", err)
 		}
+		return nil
 	}
+	_, err = os.Stdout.Write(opts.EncryptedStdin)
+	if err != nil {
+		return fmt.Errorf("failed to write to stdout: %w", err)
+	}
+
 	return nil
 }

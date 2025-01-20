@@ -1733,9 +1733,7 @@ func main() {
 							logging.SetLevel(logrus.DebugLevel)
 						}
 
-						stdin := os.Stdin
-						stdout := os.Stdout
-						_, err := io.Copy(stdout, stdin)
+						err := git.Diff(c.Args())
 						return toExitError(err)
 					},
 				},

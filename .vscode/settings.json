@@ -1,5 +1,13 @@
 {
 	"cSpell.words": [
+		"Dotenv",
+		"getsops",
+		"gogit",
+		"logrus",
+		"memfs",
+		"sirupsen",
+		"Storer",
+		"Warnf",
 		"Worktree"
 	]
 }
