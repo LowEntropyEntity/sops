@@ -1,0 +1,6 @@
+alias vim='nvim'
+alias v='nvim'
+alias l='ls -1FG'
+alias la='ls -1AFG'
+alias ll='ls -lFG'
+alias lla='ls -lAFG'

@@ -21,18 +21,6 @@ func init() {
 	log = logging.NewLogger("GIT")
 }
 
-type GitRepository interface {
-	GetGitRepo(dir string) (*gogit.Repository, error)
-}
-
-type realGitRepository struct{}
-
-func (r realGitRepository) GetGitRepo(dir string) (*gogit.Repository, error) {
-	return gogit.PlainOpen(dir)
-}
-
-var gitProvider GitRepository = realGitRepository{}
-
 type GitArea int
 
 const (
@@ -45,7 +33,7 @@ func getRepository() (*gogit.Repository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current directory: %w", err)
 	}
-	return gitProvider.GetGitRepo(pwd)
+	return gogit.PlainOpen(pwd)
 }
 
 func getWorktree() (*gogit.Worktree, error) {

@@ -1659,10 +1659,6 @@ func main() {
 							return common.NewExitError("Error: no object path specified", codes.NoFileSpecified)
 						}
 						warnMoreThanOnePositionalArgument(c)
-						if c.String("input-type") != "" && c.String("output-type") == "" {
-							// default output type to be same as input type; TODO: is this correct?
-							c.Set("output-type", c.String("input-type"))
-						}
 						objectPath := c.Args()[0]
 						inputStore, err := inputStore(c, objectPath)
 						if err != nil {
@@ -1682,9 +1678,9 @@ func main() {
 						var stdinCopy bytes.Buffer
 						tee := io.TeeReader(os.Stdin, &stdinCopy)
 
-						barename := filepath.Base(objectPath)
-						ext := filepath.Ext(barename)
-						prefix := strings.TrimSuffix(barename, ext)
+						bareName := filepath.Base(objectPath)
+						ext := filepath.Ext(bareName)
+						prefix := strings.TrimSuffix(bareName, ext)
 						pattern := prefix + "-*" + ext
 						tmp, err := os.CreateTemp("", pattern)
 						if err != nil {
@@ -1727,7 +1723,7 @@ func main() {
 				},
 				{
 					Name:  "diff",
-					Usage: "display a diffable version of a git object from stdin",
+					Usage: "display a git object from stdin for a diff viewer",
 					Action: func(c *cli.Context) error {
 						if c.Bool("verbose") {
 							logging.SetLevel(logrus.DebugLevel)
