@@ -98,13 +98,19 @@ functional-tests-all:
 	# 	TODO: Once `--include-ignored` lands in rust stable, switch to that.
 	cd functional-tests && cargo test && cargo test -- --ignored
 
+.PHONY: integration-tests
+integration-tests:
+	$(GO) build -o integration-tests/res/sops-git-binary github.com/getsops/sops/v3/cmd/sops
+	cp .sops.yaml integration-tests/res/
+	cd integration-tests && go test
+
 .PHONY: release-snapshot
 release-snapshot: install-goreleaser install-syft
 	GITHUB_REPOSITORY=$(GITHUB_REPOSITORY) $(GORELEASER) release --clean --snapshot --skip=sign
 
 .PHONY: clean
 clean:
-	rm -rf $(BIN_DIR) profile.out functional-tests/sops
+	rm -rf $(BIN_DIR) profile.out functional-tests/sops integration-tests/sops-git-binary
 
 .PHONY: install-staticcheck
 install-staticcheck:

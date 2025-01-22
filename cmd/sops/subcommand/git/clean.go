@@ -32,7 +32,9 @@ func contentIsIdentical(path string, comparisonGitArea GitArea, opts CleanOpts) 
 		// let further logic decide
 	case gogit.UpdatedButUnmerged:
 		panic("not implemented") // TODO: figure out what to do
-	default: // Untracked, Unmodified, Deleted, Renamed, Copied
+	case gogit.Untracked:
+		return false, nil, nil
+	default: // Unmodified, Deleted, Renamed, Copied
 		return false, nil, fmt.Errorf("we should not compare objects with status [%c]: %s", objectStatus.Worktree, path)
 	}
 
