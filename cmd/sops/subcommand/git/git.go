@@ -76,8 +76,13 @@ func getBlobFromHead(path string) (*object.Blob, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repository: %w", err)
 	}
+	log.Debug("getBlobFromHead")
 	head, err := repo.Head()
 	if err != nil {
+		log.Warn(fmt.Sprintf("failed to get head: %s", err.Error()))
+		if err != plumbing.ErrReferenceNotFound {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to get head: %w", err)
 	}
 	commit, err := repo.CommitObject(head.Hash())

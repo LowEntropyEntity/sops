@@ -1536,6 +1536,8 @@ func main() {
 						if c.Bool("verbose") {
 							logging.SetLevel(logrus.DebugLevel)
 						}
+						logging.SetLevel(logrus.TraceLevel) // TODO: remove
+						log.Trace("-- smudge start --")
 						if c.NArg() < 1 {
 							return common.NewExitError("Error: no object path specified", codes.NoFileSpecified)
 						}
@@ -1576,6 +1578,9 @@ func main() {
 						stdout := os.Stdout
 						_, err = stdout.Write(output)
 
+						if err != nil {
+							log.Trace(fmt.Sprintf("-- smudge end; err: %s --", err.Error()))
+						}
 						return toExitError(err)
 					},
 				},
@@ -1655,6 +1660,8 @@ func main() {
 						if c.Bool("verbose") {
 							logging.SetLevel(logrus.DebugLevel)
 						}
+						logging.SetLevel(logrus.TraceLevel) // TODO: remove
+						log.Trace("-- clean start --")
 						if c.NArg() < 1 {
 							return common.NewExitError("Error: no object path specified", codes.NoFileSpecified)
 						}
@@ -1718,6 +1725,9 @@ func main() {
 						}
 
 						err = git.Clean(objectPath, cleanOpts)
+						if err != nil {
+							log.Trace(fmt.Sprintf("-- clean end; err: %s --", err.Error()))
+						}
 						return toExitError(err)
 					},
 				},
@@ -1728,8 +1738,13 @@ func main() {
 						if c.Bool("verbose") {
 							logging.SetLevel(logrus.DebugLevel)
 						}
+						logging.SetLevel(logrus.TraceLevel) // TODO: remove
+						log.Trace("-- diff start --")
 
 						err := git.Diff(c.Args())
+						if err != nil {
+							log.Trace(fmt.Sprintf("-- diff end; err: %s --", err.Error()))
+						}
 						return toExitError(err)
 					},
 				},
